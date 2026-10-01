@@ -1,0 +1,8 @@
+CampusTrace installation:
+1. Put the folder in XAMPP htdocs or WAMP www.
+2. Start Apache and MySQL.
+3. Import database/schema.sql in phpMyAdmin.
+4. Check config/db.php credentials.
+5. Open http://localhost/campus_lost_found/
+6. Demo admin: admin@campustrace.local / Admin@12345
+7. Change demo credentials before production.

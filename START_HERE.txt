@@ -1,0 +1,22 @@
+CAMPUS TRACE — WAMP QUICK START
+
+This package is ready to copy DIRECTLY into:
+    C:\wamp64\www\
+
+After copying, open:
+    http://localhost/
+
+The Browse page will then be:
+    http://localhost/items/browse.php
+
+1. Start Apache + MySQL in WAMP.
+2. Open phpMyAdmin.
+3. Import database/schema.sql.
+4. If your MySQL root account has a password, edit config/db.php.
+5. Open http://localhost/system_check.php to verify the installation.
+6. Open http://localhost/ to use the site.
+
+If instead you keep this project inside C:\wamp64\www\campus_lost_found,
+use http://localhost/campus_lost_found/ and do NOT use http://localhost/items/...
+
+BASE_URL is auto-detected, so CSS/JS/page links work in either layout.
