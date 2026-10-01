@@ -1,112 +1,85 @@
-<!DOCTYPE html>
-<html lang="en">
+<?php
 
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
-</head>
-<style>
-  body::-webkit-scrollbar {
-    display: none;
-  }
-</style>
+declare(strict_types=1);
 
-<body>
+// CampusTrace root directory
+require_once dirname(__DIR__) . '/config/config.php';
+require_once dirname(__DIR__) . '/config/db.php';
+require_once dirname(__DIR__) . '/includes/functions.php';
 
-
-  <?php
-  $pageTitle = 'Find what matters';
-  $activePage = 'home';
-  require __DIR__ . '/includes/header.php';
-  $totalItems = (int)$pdo->query("SELECT COUNT(*) FROM items WHERE status IN ('open','matched')")->fetchColumn();
-  $totalFound = (int)$pdo->query("SELECT COUNT(*) FROM items WHERE type='found' AND status='open'")->fetchColumn();
-  $totalReturned = (int)$pdo->query("SELECT COUNT(*) FROM items WHERE status='returned'")->fetchColumn();
-  $latest = $pdo->query("SELECT i.*, u.name owner_name FROM items i JOIN users u ON u.id=i.user_id WHERE i.status='open' ORDER BY i.created_at DESC LIMIT 6")->fetchAll();
-  ?>
-  <section class="hero">
-    <div class="hero-copy">
-      <span class="eyebrow"><i></i> Lost & Found, rebuilt for campus life</span>
-      <h1>Turn <span class="gradient-text">lost moments</span> into found ones.</h1>
-      <p>CampusTrace gives students one trusted place to report lost belongings, post found items, discover matches, and safely coordinate returns.</p>
-      <div class="hero-actions"><a class="btn btn-primary" href="<?= BASE_URL ?>/items/browse.php">Explore items →</a><a class="btn btn-secondary" href="<?= BASE_URL ?>/items/post.php">+ Report an item</a></div>
-      <div class="hero-stats">
-        <div class="stat"><strong><?= number_format($totalItems) ?></strong><span>active reports</span></div>
-        <div class="stat"><strong><?= number_format($totalFound) ?></strong><span>found items</span></div>
-        <div class="stat"><strong><?= number_format($totalReturned) ?></strong><span>returned</span></div>
-      </div>
+require_login();
+$pageTitle = 'Claims';
+require __DIR__ . '/../includes/header.php';
+$u = current_user();
+$incoming = $pdo->prepare('SELECT c.*,i.title,i.type,u.name claimant_name,u.email claimant_email FROM claims c JOIN items i ON i.id=c.item_id JOIN users u ON u.id=c.claimant_id WHERE i.user_id=? ORDER BY c.created_at DESC');
+$incoming->execute([$u['id']]);
+$incoming = $incoming->fetchAll();
+$out = $pdo->prepare('SELECT c.*,i.title,i.type,u.name poster_name FROM claims c JOIN items i ON i.id=c.item_id JOIN users u ON u.id=i.user_id WHERE c.claimant_id=? ORDER BY c.created_at DESC');
+$out->execute([$u['id']]);
+$out = $out->fetchAll();
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verify_csrf($_POST['csrf'] ?? null);
+    $claimId = (int)$_POST['claim_id'];
+    $action = $_POST['action'] ?? '';
+    $q = $pdo->prepare('SELECT c.*,i.user_id item_owner,i.title FROM claims c JOIN items i ON i.id=c.item_id WHERE c.id=? LIMIT 1');
+    $q->execute([$claimId]);
+    $c = $q->fetch();
+    if (!$c) redirect('/claims/index.php');
+    if ((int)$c['item_owner'] !== (int)$u['id']) {
+        http_response_code(403);
+        exit('Forbidden');
+    }
+    if (in_array($action, ['approved', 'rejected'], true)) {
+        $pdo->beginTransaction();
+        $q = $pdo->prepare('UPDATE claims SET status=? WHERE id=?');
+        $q->execute([$action, $claimId]);
+        if ($action === 'approved') {
+            $q = $pdo->prepare("UPDATE items SET status='returned' WHERE id=?");
+            $q->execute([$c['item_id']]);
+            $q = $pdo->prepare('UPDATE claims SET status=\'rejected\' WHERE item_id=? AND id<>? AND status=\'pending\'');
+            $q->execute([$c['item_id'], $claimId]);
+        }
+        $q = $pdo->prepare('INSERT INTO notifications(user_id,type,message,link) VALUES(?,?,?,?)');
+        $q->execute([$c['claimant_id'], 'claim_update', 'Your claim for “' . $c['title'] . '” was ' . $action . '.', '/claims/index.php']);
+        $pdo->commit();
+        set_flash('Claim updated.');
+    }
+    redirect('/claims/index.php');
+}
+?><div class="page-shell">
+    <div class="page-title">
+        <div><span class="eyebrow">Verification workflow</span>
+            <h1>Claims center</h1>
+            <p>Review incoming claims on your reports and track the claims you have submitted.</p>
+        </div>
     </div>
-    <div class="hero-visual"><canvas id="hero-canvas"></canvas>
-      <div class="float-card float-a"><strong>✦ Smart matching</strong><small>Search by place, type & date</small></div>
-      <div class="float-card float-b"><strong>✓ Verified flow</strong><small>Claim → review → return</small></div>
+    <div class="split">
+        <section class="panel">
+            <div class="section-head">
+                <div>
+                    <h2>Incoming</h2>
+                    <p>People claiming items you posted.</p>
+                </div>
+            </div><?php if (!$incoming): ?><div class="empty">No incoming claims.</div><?php else: ?><div style="display:grid;gap:14px"><?php foreach ($incoming as $c): ?><div class="claim-box" style="display:block">
+                            <div style="display:flex;justify-content:space-between;gap:10px">
+                                <div><strong><?= e($c['title']) ?></strong>
+                                    <div class="muted">Claim by <?= e($c['claimant_name']) ?> · <?= e(time_ago($c['created_at'])) ?></div>
+                                </div><?= status_badge($c['status']) ?>
+                            </div>
+                            <p><?= nl2br(e($c['message'])) ?></p><?php if ($c['proof_details']): ?><div class="notice"><strong>Proof details</strong><br><?= nl2br(e($c['proof_details'])) ?></div><?php endif; ?><?php if ($c['status'] === 'pending'): ?><form method="post" style="display:flex;gap:8px;margin-top:12px"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="claim_id" value="<?= (int)$c['id'] ?>"><button class="btn btn-primary" name="action" value="approved">Approve & return</button><button class="btn btn-danger" name="action" value="rejected">Reject</button></form><?php endif; ?>
+                        </div><?php endforeach; ?></div><?php endif; ?>
+        </section>
+        <section class="panel">
+            <div class="section-head">
+                <div>
+                    <h2>Submitted</h2>
+                    <p>Your claims on other reports.</p>
+                </div>
+            </div><?php if (!$out): ?><div class="empty">You have not submitted a claim.</div><?php else: ?><div style="display:grid;gap:10px"><?php foreach ($out as $c): ?><div class="claim-box">
+                            <div><strong><?= e($c['title']) ?></strong>
+                                <div class="muted">Poster: <?= e($c['poster_name']) ?></div>
+                            </div><?= status_badge($c['status']) ?>
+                        </div><?php endforeach; ?></div><?php endif; ?>
+        </section>
     </div>
-  </section>
-  <section class="section">
-    <div class="section-head">
-      <div><span class="eyebrow">Why CampusTrace</span>
-        <h2>Simple for students. Serious about trust.</h2>
-      </div>
-      <p>Every interaction is designed around useful information, privacy-conscious handoffs, and a clean campus experience.</p>
-    </div>
-    <div class="cards">
-      <article class="feature">
-        <div class="feature-icon">⌕</div>
-        <h3>Search faster</h3>
-        <p>Filter reports by lost/found status, category, location and date instead of scrolling through a noisy feed.</p>
-      </article>
-      <article class="feature">
-        <div class="feature-icon">◇</div>
-        <h3>Prove ownership</h3>
-        <p>Claimants can provide private identifying details so an item can be verified before it changes hands.</p>
-      </article>
-      <article class="feature">
-        <div class="feature-icon">↗</div>
-        <h3>Close the loop</h3>
-        <p>Owners and finders can move an item through a clear open, matched and returned lifecycle.</p>
-      </article>
-    </div>
-  </section>
-  <section class="section" style="padding-top:10px">
-    <div class="section-head">
-      <div><span class="eyebrow">Latest reports</span>
-        <h2>Fresh activity from campus</h2>
-      </div><a class="btn btn-ghost" href="<?= BASE_URL ?>/items/browse.php">View all</a>
-    </div>
-    <div class="item-grid"><?php foreach ($latest as $item): ?><a class="item-card" href="<?= BASE_URL ?>/items/view.php?id=<?= (int)$item['id'] ?>">
-          <div class="item-image"><img src="<?= BASE_URL ?>/<?= e(item_image($item['image_path'])) ?>" alt="<?= e($item['title']) ?>"><span style="position:absolute;top:12px;left:12px"><?= status_badge($item['type']) ?></span></div>
-          <div class="item-body">
-            <div class="item-meta"><span class="muted"><?= e($item['category']) ?></span><span class="muted"><?= e(time_ago($item['created_at'])) ?></span></div>
-            <h3><?= e($item['title']) ?></h3>
-            <p>📍 <?= e($item['location']) ?></p>
-          </div>
-        </a><?php endforeach; ?></div>
-  </section>
-  <section class="section" style="padding-top:10px">
-    <div class="how-grid">
-      <div class="step"><span class="step-num">01 / REPORT</span>
-        <h3>Post the details</h3>
-        <p class="muted">Add where, when and what makes the item identifiable.</p>
-      </div>
-      <div class="step"><span class="step-num">02 / DISCOVER</span>
-        <h3>Search the feed</h3>
-        <p class="muted">Use filters to narrow down possible matches.</p>
-      </div>
-      <div class="step"><span class="step-num">03 / CLAIM</span>
-        <h3>Share proof</h3>
-        <p class="muted">Explain details that only the true owner should know.</p>
-      </div>
-      <div class="step"><span class="step-num">04 / RETURN</span>
-        <h3>Close the case</h3>
-        <p class="muted">Approve the claim and mark the item returned.</p>
-      </div>
-    </div>
-  </section>
-  <section class="cta"><span class="eyebrow">Ready when you are</span>
-    <h2>Make your next lost item easier to recover.</h2>
-    <p>Create a free student account and keep campus belongings moving toward their owners.</p><a class="btn btn-primary" href="<?= BASE_URL ?>/auth/register.php">Create student account</a>
-  </section>
-  <?php require __DIR__ . '/includes/footer.php'; ?>
-
-</body>
-
-</html>
+</div><?php require __DIR__ . '/../includes/footer.php'; ?>
